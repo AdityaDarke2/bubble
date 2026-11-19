@@ -1,505 +1,382 @@
-Objective: Learn how to find out WHY a system is slow and how to fix it. You will record a healthy baseline, watch how load average
-behaves, move a greedy process to another CPU core, limit the memory of a process, compare how a disk handles one big file versus many small files, and build a small monitoring script with alerts.
+Objective: Learn what logs are, why companies centralize them, and how
+the ELK Stack works. You will set up the stack using Docker, load the
+logs of a college web portal into it, search them, and build a
+dashboard to investigate login failures and server errors.
 
-How to use this assignment: Read PART 0 first (it teaches the concepts), then follow Parts 1-7 in order. Every command is given.
+How to use this assignment: Read PART 0 first (it teaches you the
+concepts), then follow Parts 1-6 in order. Every command is given.
+Do not skip the reading; the questions at the end test whether you
+understood it.
 
-To be completed and submitted within today's lab session. Suggested time: Part 0 (10 min), Parts 1-2 (15 min), Part 3 (20 min),
-Part 4 (12 min), Part 5 (15 min), Part 6 (10 min), write-up (8 min).
-
-SAFETY RULES (lab PCs are shared):
-- Create only the load that is written in the steps. Never increase
-  the numbers.
-- Always stop your load processes and delete your test files when
-  the step says so.
-- Do all work inside your own folder in your Linux home directory
-  (not in /mnt/c on WSL).
-- Do not run any of these commands on someone else's machine.
+To be completed and submitted within today's lab session.
+Suggested time: Part 0 (15 min), Parts 1-2 (25 min), Parts 3-4 (30 min),
+Parts 5-6 (25 min), write-up (5 min).
 
 ════════════════════════════════
 PART 0: READ FIRST — CONCEPTS
 ════════════════════════════════
 
-0.1 Scenario
-You are a junior system administrator at a college. The shared FILE SERVER (where students and teachers store files) becomes slow in the evening when many people upload and back up data. Your job is not to guess. Your job is to measure, find the bottleneck, change ONE thing, and measure again.
+0.1 What is a log?
+A log is a record of events written by an application or server. Think
+of it as a CCTV recording of software: every time something happens
+(a page is requested, a user logs in, an error occurs), one line is
+written. A single line from a web server log looks like this:
 
-0.2 Bottleneck
-A bottleneck is the slowest resource that limits the performance of the whole system (like a single-lane bridge on a wide highway: no matter how many lanes the highway has, traffic moves at the speed of the bridge). The four main resources are CPU, memory, disk and
-network. Buying more RAM will not help if the real problem is a slow disk. Always find the bottleneck first.
+10.0.0.21 - - [12/Oct/2026:09:00:05 +0530] "GET /home HTTP/1.1" 200 1500 "-" "Mozilla/5.0"
 
-0.3 Baseline
-A baseline is a set of readings recorded when the system is healthy. You know a person has a fever only because you know the normal body temperature. In the same way, you can say a server is "slow" only by comparing against its baseline.
+It tells us: WHO (IP address 10.0.0.21), WHEN (12 Oct 2026, 09:00),
+WHAT (a GET request for /home), RESULT (status code 200), and SIZE
+(1500 bytes).
 
-0.4 The tuning cycle
-   1. MEASURE the system
-   2. IDENTIFY the bottleneck
-   3. CHANGE only one thing
-   4. MEASURE again and compare
-If you change many things together, you will never know which one
-helped.
+HTTP status codes to remember:
+   200 = OK (success)
+   301 = Moved (redirect)
+   401 = Unauthorized (login failed or missing)
+   403 = Forbidden (not allowed)
+   404 = Not Found (page does not exist)
+   500 = Server Error (something broke on the server)
 
-0.5 CPU: load average and CPU affinity
-Imagine a kitchen with 4 chefs (4 CPU cores). Orders are the running tasks. If 4 orders come, every chef is busy and nobody waits. If 8
-come, 4 wait in a queue. "Load average" (shown by uptime) is the average number of tasks running or waiting for CPU. uptime shows THREE numbers: the average over the last 1 minute, 5 minutes and 15 minutes. When a heavy load starts, the 1-minute number rises quickly, the 5-minute number rises slowly, and the 15-minute number hardly moves. Comparing the three tells you whether the load is a short spike or a long-running problem. Because these are averages, they never jump instantly to the final value; after one minute of a steady load the 1-minute value has reached only about 60% of it.
-"pidstat -u" shows how much CPU each PROCESS is using, so you can find
-the culprit.
-CPU affinity means "pinning" a process to chosen CPU cores. If a
-greedy process is pinned to core 0, it cannot disturb a job running
-on core 1. The trade-off: a pinned process cannot use the other cores
-even when they are idle, so affinity must be used carefully.
+0.2 Monitoring vs Logging
+In the last lab, Nagios told us THAT something is wrong (a service
+turned red). Logs tell us WHY it went wrong. Companies use both
+together: monitoring raises the alarm, logs help find the cause.
 
-0.6 Memory: RSS, VSZ and limits
-RAM is your working desk; the disk is a storage room far away.
-For one process, two numbers matter:
-   RSS = the physical RAM the process is really using right now
-   VSZ = the total virtual memory the process has reserved (can be
-         much bigger than what it really uses)
-Linux can also set a LIMIT on how much virtual memory a process may
-use ("ulimit -v", in kilobytes). If the process asks for more, the
-request fails and the program gets a "MemoryError" instead of
-swallowing the whole server's RAM. Limits protect a shared server
-from one buggy program.
-Reminder: check "available" memory (MemAvailable), not just "free",
-because Linux uses spare RAM as cache.
+0.3 The "needle in a haystack" problem
+A small website has one server and one log file; you can just open it.
+A big company has hundreds of servers, each producing millions of log
+lines per day. Logging in to each server and reading files is
+impossible. The solution is CENTRALIZED LOGGING: collect logs from all
+servers into one place, make them searchable, and show them as charts.
 
-0.7 Disk: big files, small files and inodes
-Copying 100 MB as ONE file is usually much faster than copying 100 MB
-made of thousands of tiny files, because every file needs extra work:
-a new directory entry and a new inode (an inode is a small record
-that stores a file's information). A filesystem can even run out of
-inodes while still having free space; "df -i" shows inode usage. One
-common trick is to bundle many small files into a single archive
-(tar) before copying or backing them up.
-Two numbers to watch in iostat: await (how long a request waits for
-the disk, in milliseconds) and %util (how busy the disk is).
+0.4 The ELK Stack
+ELK is a group of three open-source tools from Elastic. Think of a
+restaurant:
+   - Logstash is the prep cook. It takes raw ingredients (raw logs),
+     cleans and cuts them (processes them).
+   - Elasticsearch is the storage room with a super-fast manager. It
+     stores everything and finds anything you ask for in milliseconds.
+   - Kibana is the waiter and menu card. It presents the data to you
+     as searches, charts and dashboards.
 
-0.8 The USE Method
-For every resource ask three questions:
-   Utilization - how much of it is being used?
-   Saturation  - is work waiting in a queue?
-   Errors      - are there any errors?
-If CPU, memory and disk all look healthy, suspect the network or the
-application itself.
+Flow:  Log file  →  Logstash  →  Elasticsearch  →  Kibana
 
-0.9 Monitoring tools: Nagios and Zabbix (reading task)
-In Lab 7 you used Nagios. A Nagios check is a small program (a
-"plugin"). Nagios reads the plugin's exit code: 0 = OK, 1 = WARNING,
-2 = CRITICAL, 3 = UNKNOWN, plus one line of text. Zabbix is another
-popular open-source monitoring tool. It normally installs a small
-"agent" on each server that collects data and sends it to the Zabbix
-server, which stores long-term history with built-in graphs. Both
-raise alerts when a threshold is crossed. You will answer a question
-about this in Part 7.
+0.5 Elasticsearch in detail
+- It is a search engine, like Google but for your own data.
+- It stores data as JSON documents. One log line becomes one document.
+- A group of documents is called an INDEX (like a cupboard that holds
+  many files).
+- You talk to it using a REST API over HTTP, on port 9200.
 
-════════════════════════════════
-PART 1: SETUP
-════════════════════════════════
-Step 1. Open a terminal. Create a working folder in your home
-directory:
-   cd ~
-   mkdir perf-lab-d
-   cd perf-lab-d
+0.6 Logstash in detail
+- Logstash is a data pipeline with three stages:
+     INPUT  = where the data comes from (a file, network, database)
+     FILTER = clean and structure the data
+     OUTPUT = where the data goes (here, Elasticsearch)
+- The most important filter is GROK. A raw log line is one long piece
+  of text. Grok splits it into separate named fields (clientip, verb,
+  request, response...). Without this, we could not search "only 401
+  errors" or draw a chart by status code.
 
-Step 2. Install the tools:
-   sudo apt update
-   sudo apt install -y sysstat stress-ng htop
-Screenshot [S1]: the installation finishing without errors.
+0.7 Kibana in detail
+- Kibana is a web dashboard that runs in the browser on port 5601.
+- Discover = search and filter raw log events (like Google search).
+- Dashboard / Visualizations = bar charts, pie charts, and graphs
+  (like a car's speedometer: raw engine data shown in a readable way).
 
-Step 3. Check the tools are available:
-   stress-ng --version
-   pidstat -V
-   taskset --version
-   python3 --version
-Screenshot [S2].
+0.8 Why is this "open source"?
+All three tools were open source and are widely used in industry.
+Interesting case study: in 2021 Elastic changed Elasticsearch's license,
+and Amazon created its own fork called OpenSearch. This shows how
+licenses and business decisions shape open-source projects.
+
+0.9 Today's scenario
+You are a junior system administrator at a college. Students are
+complaining that the fees page "sometimes shows an error", and the
+security team suspects someone is trying to guess passwords on the
+login page. You have the web server log of the college portal. Your
+job is to load it into ELK and find out what is happening.
 
 ════════════════════════════════
-PART 2: RECORD YOUR BASELINE (HEALTHY SYSTEM)
+PART 1: PREPARE YOUR WORKSPACE AND FILES
 ════════════════════════════════
-Close heavy applications first (videos, many browser tabs). Then run
-each command and screenshot.
+Use a plain text editor (nano or VS Code). Do NOT use Word or Google
+Docs to create these files, as they change quotes and break the
+configuration.
 
-Step 4. CPU cores and model:
-   nproc
-   lscpu | grep -E "^CPU\(s\):|Model name"
-Screenshot [S3]. Write the number: CORES = __.
+Step 1. Create a folder and open it in the terminal:
+   mkdir elk-portal-lab
+   cd elk-portal-lab
 
-Step 5. Load average:
-   uptime
-Screenshot [S4]. Write ALL THREE load average numbers (1, 5, 15 min).
+Step 2. Create the log file. Run: nano portal_access.log
+Paste the following 22 lines. IMPORTANT: press Enter after the last
+line so the file ends with a blank new line (Logstash ignores a last
+line without a newline).
 
-Step 6. Memory in megabytes:
-   free -m
-Screenshot [S5]. Write total, available and swap used.
+10.0.0.21 - - [12/Oct/2026:09:00:05 +0530] "GET /home HTTP/1.1" 200 1500 "-" "Mozilla/5.0"
+10.0.0.22 - - [12/Oct/2026:09:00:48 +0530] "GET /results HTTP/1.1" 200 3200 "-" "Chrome/118.0"
+10.0.0.23 - - [12/Oct/2026:09:01:30 +0530] "POST /login HTTP/1.1" 200 640 "-" "Mozilla/5.0"
+10.0.0.24 - - [12/Oct/2026:09:02:15 +0530] "GET /timetable HTTP/1.1" 200 2100 "-" "Mozilla/5.0"
+10.0.0.25 - - [12/Oct/2026:09:03:02 +0530] "POST /login HTTP/1.1" 401 210 "-" "Mozilla/5.0"
+10.0.0.25 - - [12/Oct/2026:09:03:20 +0530] "POST /login HTTP/1.1" 401 210 "-" "Mozilla/5.0"
+10.0.0.25 - - [12/Oct/2026:09:03:41 +0530] "POST /login HTTP/1.1" 401 210 "-" "Mozilla/5.0"
+10.0.0.25 - - [12/Oct/2026:09:04:05 +0530] "POST /login HTTP/1.1" 401 210 "-" "Mozilla/5.0"
+10.0.0.22 - - [12/Oct/2026:09:05:10 +0530] "GET /fees HTTP/1.1" 500 320 "-" "Chrome/118.0"
+10.0.0.26 - - [12/Oct/2026:09:06:00 +0530] "GET /library HTTP/1.1" 200 1800 "-" "Mozilla/5.0"
+10.0.0.27 - - [12/Oct/2026:09:07:25 +0530] "GET /old-syllabus HTTP/1.1" 301 190 "-" "Mozilla/5.0"
+10.0.0.23 - - [12/Oct/2026:09:08:40 +0530] "GET /results HTTP/1.1" 200 3200 "-" "Mozilla/5.0"
+10.0.0.28 - - [12/Oct/2026:09:09:55 +0530] "GET /hostel-form HTTP/1.1" 404 480 "-" "Chrome/118.0"
+10.0.0.24 - - [12/Oct/2026:09:11:12 +0530] "POST /submit-assignment HTTP/1.1" 200 720 "-" "Mozilla/5.0"
+10.0.0.29 - - [12/Oct/2026:09:12:30 +0530] "GET /fees HTTP/1.1" 500 320 "-" "Mozilla/5.0"
+10.0.0.30 - - [12/Oct/2026:09:13:45 +0530] "GET /admin-panel HTTP/1.1" 403 260 "-" "Mozilla/5.0"
+10.0.0.26 - - [12/Oct/2026:09:15:00 +0530] "GET /home HTTP/1.1" 200 1500 "-" "Chrome/118.0"
+10.0.0.21 - - [12/Oct/2026:09:16:20 +0530] "POST /submit-assignment HTTP/1.1" 500 410 "-" "Mozilla/5.0"
+10.0.0.31 - - [12/Oct/2026:09:17:35 +0530] "GET /notices HTTP/1.1" 200 2600 "-" "Mozilla/5.0"
+10.0.0.28 - - [12/Oct/2026:09:18:50 +0530] "GET /hostel-form.pdf HTTP/1.1" 404 480 "-" "Chrome/118.0"
+10.0.0.22 - - [12/Oct/2026:09:20:05 +0530] "GET /fees HTTP/1.1" 500 320 "-" "Chrome/118.0"
+10.0.0.32 - - [12/Oct/2026:09:21:15 +0530] "GET /notice-board.png HTTP/1.1" 404 480 "-" "Chrome/118.0"
 
-Step 7. Detailed memory figures (values are in kB):
-   grep -E "MemTotal|MemAvailable|^Cached|SwapTotal|SwapFree" /proc/meminfo
-Screenshot [S6]. Note MemAvailable (you will compare it later).
-
-Step 8. Overall activity, one reading per second for 5 seconds:
-   vmstat 1 5
-Screenshot [S7]. Note: r, b, si, so, us, sy, id, wa.
-
-Step 9. Disk activity, 3 readings:
-   iostat -x 1 3
-Screenshot [S8]. Note %util and the await column (it may be named
-await, r_await or w_await depending on version).
-(If iostat shows no disk data on your system, write that in your
-document and continue; this can happen on WSL.)
-
-Step 10. Disk space and inode usage of your current folder:
-   df -h .
-   df -i .
-Screenshot [S9].
-
-Step 11. Create a BASELINE TABLE in your document with these rows:
-cores, CPU model, 1/5/15-min load, MemAvailable (MB), swap used, CPU
-idle %, I/O wait %, disk %util, disk used %, inode used %.
-
-════════════════════════════════
-PART 3: EXPERIMENT 1 — CPU: LOAD AVERAGE AND CPU AFFINITY
-════════════════════════════════
-PART 3A — Watch the load average rise and fall
-Use ONE terminal for this part.
-
-Step 12. Record the load before starting:
-   uptime
-Screenshot [S10].
-
-Step 13. Start a CPU load on ALL cores for 90 seconds, in the
-background:
-   stress-ng --cpu $(nproc) --timeout 90s &
-
-Step 14. Immediately run this single line. It waits 5 seconds, shows
-per-process CPU usage for 6 seconds, shows the load, waits 40 seconds
-and shows the load again:
-   sleep 5; pidstat -u 2 3; uptime; sleep 40; uptime
-Screenshot [S11]: the whole output. In pidstat, look at the %CPU
-column: the "stress-ng-cpu" workers should be near the top, each near
-100%.
-
-Step 15. Wait until stress-ng finishes, then record the load again:
-   wait
-   uptime
-Screenshot [S12].
-
-Step 16. In your document make a table with FOUR rows: before load,
-about 10 seconds after start, about 50 seconds after start, after
-the load ended. For each row write the 1-min, 5-min and 15-min load
-values. Write which of the three numbers changed the most and which
-changed the least.
-
-PART 3B — Move a greedy process to another core (CPU affinity)
-Step 17. This part needs at least 2 CPU cores. Check your CORES value
-from Step 4. If you have only 1 core, write "single core system" in
-your document and skip Steps 18-25.
-
-Step 18. Run a small calculation pinned to core 1 and note the
-"real" time (call it T1):
-   time taskset -c 1 python3 -c "print(sum(i%7 for i in range(15000000)))"
-Screenshot [S13].
-(If it finishes in less than 1.5 seconds on your machine, use
-45000000 instead of 15000000 in ALL three runs of this command.)
-
-Step 19. Start a greedy process on the SAME core 1 and note its PID:
-   taskset -c 1 yes > /dev/null &
-   jobs -l
-
-Step 20. Check which core it is running on (the PSR column is the
-core number):
-   ps -o pid,psr,cmd -p <PID>
-Screenshot [S14]: Steps 19 and 20 together; PSR should be 1.
-
-Step 21. Run the calculation again while the greedy process shares
-core 1 and note the time (T2):
-   time taskset -c 1 python3 -c "print(sum(i%7 for i in range(15000000)))"
-Screenshot [S15].
-
-TUNING — Move the greedy process to core 0
-Step 22. Change the CPU affinity of the RUNNING greedy process, then
-check where it runs now:
-   taskset -cp 0 <PID>
-   ps -o pid,psr,cmd -p <PID>
-Screenshot [S16]: the affinity message and PSR now showing 0.
-
-Step 23. Run the calculation a third time (still pinned to core 1)
-and note the time (T3):
-   time taskset -c 1 python3 -c "print(sum(i%7 for i in range(15000000)))"
-Screenshot [S17].
-(On some machines two logical cores share one physical core, so T3
-may be slightly higher than T1. That is normal.)
-
-Step 24. Stop the greedy process and confirm it is gone:
-   kill <PID>; sleep 1; jobs -l; pgrep -ax yes || echo "no yes process running"
-Screenshot [S18].
-
-Step 25. Make a table in your document: T1 (calculation alone), T2
-(greedy process on the same core), T3 (greedy process moved to core
-0). Write what you learned about CPU affinity.
-
-════════════════════════════════
-PART 4: EXPERIMENT 2 — MEMORY: RSS, VSZ AND PROCESS LIMITS
-════════════════════════════════
-You need two terminals. Terminal 1 runs commands. Terminal 2 monitors.
-
-Step 26. Terminal 1: check memory and the current memory limit of
-your shell:
-   free -m
-   ulimit -v
-Screenshot [S19]. (ulimit -v prints "unlimited" if no limit is set.)
-
-Step 27. Terminal 2: watch the memory figures every second
-   watch -n 1 "grep -E 'MemAvailable|SwapFree' /proc/meminfo"
-(Leave it running.)
-
-Step 28. Terminal 1: start a process that holds 400 MB of memory for
-40 seconds, and look at its RSS and VSZ (in kB):
-   python3 -c "import time; a = b'x' * (400*1024*1024); print('allocated 400 MB'); time.sleep(40)" &
-   sleep 3; ps -o pid,rss,vsz,cmd -C python3
-Screenshot [S20]. (If your system has less than 4 GB RAM, use
-200*1024*1024 instead of 400*1024*1024 here and in the next steps,
-and write "200 MB" instead of "400 MB".)
-
-Step 29. Screenshot [S21]: Terminal 2 while the process is running.
-Compare MemAvailable with the value from Step 7. It should be lower
-by roughly the size of the memory your process holds.
-
-Step 30. Wait about 40 seconds until the process finishes. Screenshot
-[S22]: Terminal 2 showing MemAvailable back near its original value.
-Then press Ctrl+C in Terminal 2.
-
-TUNING — Limit the memory of a process
-Step 31. In Terminal 1, run the same allocation, but inside a
-subshell that has a memory limit of about 293 MB (300000 kB). The
-brackets matter: they keep the limit away from your main terminal.
-   ( ulimit -v 300000; python3 -c "a = b'x' * (400*1024*1024); print('allocated')" ); echo "exit code: $?"
-   ulimit -v
-Screenshot [S23]: you should see a MemoryError, a non-zero exit code,
-and "unlimited" on the last line (your main terminal was not
-affected). (Low-RAM variant: allocate 200 MB and use -v 150000.)
-
-Step 32. Now run it again with a higher limit (about 586 MB):
-   ( ulimit -v 600000; python3 -c "a = b'x' * (400*1024*1024); print('allocated')" ); echo "exit code: $?"
-Screenshot [S24]: it should print "allocated" and exit code 0.
-(Low-RAM variant: allocate 200 MB and use -v 300000.)
-(If Python cannot even start under a limit on your system, raise both
-limit numbers by 100000 and try again, and note this in your
-document.)
-
-Step 33. In your document answer: how does a memory limit protect a
-shared file server, and what is one risk of setting the limit too low?
-
-════════════════════════════════
-PART 5: EXPERIMENT 3 — DISK: ONE BIG FILE VS MANY SMALL FILES
-════════════════════════════════
-This part needs about 500 MB of free disk space. Check with Step 34.
-
-Step 34. Create a test folder and check space and inodes:
-   cd ~/perf-lab-d
-   mkdir disk-test
-   cd disk-test
-   df -h .
-   df -i .
-Screenshot [S25]. Note "Avail" and the IUse% value.
-
-Step 35. Terminal 2: watch disk activity (leave it running during
-this whole part)
-   vmstat 1
-(Watch the "bo" column: blocks written to disk per second.)
-
-Step 36. Terminal 1: create ONE big file of 64 MB:
-   dd if=/dev/zero of=big.bin bs=1M count=64 conv=fdatasync
-Screenshot [S26]: the dd result with its speed.
-
-Step 37. Create 2000 small files of 32 KB each (about the same total
-size). This is only the setup and is not timed:
-   mkdir small
-   for i in $(seq 1 2000); do head -c 32768 /dev/zero > small/f$i; done; sync
-   ls small | wc -l
-   du -sh small big.bin
-   df -i .
-Screenshot [S27]: the file count (2000), the sizes, and the inode
-usage. Compare "Used" inodes with Step 34.
-
-Step 38. TEST A: copy the ONE big file and time it (sync makes sure
-the data really reaches the disk):
-   time (cp big.bin big_copy.bin; sync)
-Screenshot [S28]. Note the "real" time.
-
-Step 39. TEST B: copy the folder of 2000 small files and time it:
-   time (cp -r small small_copy; sync)
-Screenshot [S29]. Note the "real" time.
-
-Step 40. TEST C (tuning): bundle the small files into one archive,
-time the archiving, then time copying the single archive:
-   time (tar -cf small.tar small; sync)
-Screenshot [S30].
-   time (cp small.tar small_tar_copy.tar; sync)
-Screenshot [S31].
-
-Step 41. Screenshot [S32]: Terminal 2 (vmstat) showing the "bo"
-spikes during your tests. Then press Ctrl+C in Terminal 2.
-
-Step 42. Make a table in your document: Test A (copy one 64 MB file),
-Test B (copy 2000 small files), Test C1 (create tar), Test C2 (copy
-the tar). Write which was fastest and slowest and explain using
-Part 0.7. (On a very fast SSD all times may be small and close to
-each other; write exactly what you observe.)
-
-Step 43. CLEAN UP (important):
-   cd ~/perf-lab-d
-   rm -rf disk-test
-   ls
-Screenshot [S33] showing the disk-test folder is gone.
-
-════════════════════════════════
-PART 6: BUILD YOUR OWN MINI MONITOR (SCRIPT WITH ALERTS)
-════════════════════════════════
-Nagios checks resources and raises alerts. You will build a tiny
-version of that, with a DISK alert and a PROCESS alert that names
-the culprit.
-
-Step 44. Create the script in your perf-lab-d folder:
-   cd ~/perf-lab-d
-   nano mini_monitor_d.sh
+Step 3. Create the Logstash pipeline file. Run: nano logstash.conf
 Paste exactly this:
 
-#!/bin/bash
-# Mini monitor D: logs load, disk usage and the top CPU process
-DISK_MAX=90
-PROC_CPU_MAX=80
-echo "time,load1,disk_used_pct,top_process,top_cpu_pct" > perf_log_d.csv
-for i in $(seq 1 10); do
-  t=$(date +%H:%M:%S)
-  l=$(cut -d' ' -f1 /proc/loadavg)
-  d=$(df -P . | awk 'NR==2 {gsub("%","",$5); print $5}')
-  read pcpu pname < <(ps -eo %cpu,comm --sort=-%cpu | awk 'NR>1 && $2!="ps" && $2!="awk" {print $1, $2; exit}')
-  pcpu_int=${pcpu%.*}
-  echo "$t,$l,$d,$pname,$pcpu" >> perf_log_d.csv
-  if [ "$d" -ge "$DISK_MAX" ]; then
-    echo "DISK ALERT at $t: disk is $d% full"
-  fi
-  if [ "$pcpu_int" -ge "$PROC_CPU_MAX" ]; then
-    echo "PROCESS ALERT at $t: $pname is using $pcpu% CPU"
-  fi
-  sleep 5
-done
-echo "Done. Data saved in perf_log_d.csv"
+input {
+  file {
+    path => "/usr/share/logstash/input/portal_access.log"
+    start_position => "beginning"
+    sincedb_path => "/dev/null"
+  }
+}
 
-Step 45. Make it executable and run it once with no extra load
-(takes about 50 seconds):
-   chmod +x mini_monitor_d.sh
-   ./mini_monitor_d.sh
-Screenshot [S34]: the script running to completion.
+filter {
+  grok {
+    match => { "message" => "%{COMBINEDAPACHELOG}" }
+    ecs_compatibility => disabled
+  }
+  date {
+    match => [ "timestamp", "dd/MMM/yyyy:HH:mm:ss Z" ]
+  }
+  mutate {
+    convert => { "response" => "integer" "bytes" => "integer" }
+  }
+}
 
-Step 46. Test the PROCESS alert. Start a greedy process, run the
-monitor, then stop the greedy process:
-   yes > /dev/null &
-   ./mini_monitor_d.sh
-   pkill yes
-Screenshot [S35]: the output showing PROCESS ALERT lines that name
-"yes" as the culprit.
+output {
+  elasticsearch {
+    hosts => ["http://elasticsearch:9200&quot;]
+    index => "portal-logs-%{+YYYY.MM.dd}"
+  }
+  stdout { codec => rubydebug }
+}
 
-Step 47. Test the DISK alert. Your disk is probably less than 90%
-full, so we temporarily set the limit to 0 to force the alert. Use
-these commands:
-   sed -i 's/^DISK_MAX=90$/DISK_MAX=0/' mini_monitor_d.sh
-   grep "^DISK_MAX=" mini_monitor_d.sh
-   ./mini_monitor_d.sh
-Screenshot [S36]: DISK ALERT lines. Then restore the original value
-and verify it:
-   sed -i 's/^DISK_MAX=0$/DISK_MAX=90/' mini_monitor_d.sh
-   grep "^DISK_MAX=" mini_monitor_d.sh
-Screenshot [S37]: showing DISK_MAX=90 again.
+Step 4. Create the Docker Compose file. Run: nano docker-compose.yml
+Paste exactly this (spaces matter in YAML; do not use tabs):
 
-Step 48. Display the saved data:
-   cat perf_log_d.csv
-Screenshot [S38].
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
 
-Step 49. In your document explain in 4-5 lines: which part of the
-script is the "INPUT" (data collection), which are the "threshold
-checks", and which are the "alerts". How is this similar to the Host,
-Service, Threshold and Alert concepts of Nagios from Lab 7? Why did
-we set DISK_MAX to 0 in Step 47?
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.15.0
+    container_name: logstash
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+      - ./portal_access.log:/usr/share/logstash/input/portal_access.log
+    depends_on:
+      - elasticsearch
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+
+Step 5. Verify all three files exist: run "ls -l".
+Screenshot [S1]: the terminal showing the three files.
+
+Step 6. In the logstash.conf file, find the three sections and write
+one line each in your document: what does INPUT do, what does FILTER
+do (mention grok, date and mutate), what does OUTPUT do?
 
 ════════════════════════════════
-PART 7: ANALYSIS (answer in your document)
+PART 2: START THE ELK STACK
 ════════════════════════════════
-A1. Using your table from Step 16: which of the three load average
-    numbers rose the fastest and which the slowest? Why do they
-    behave differently? If you saw a server with a high 1-minute
-    load but a low 15-minute load, what would that tell you?
-A2. Using your table from Step 25: how much slower was T2 than T1?
-    How close did T3 get to T1 after you moved the greedy process?
-    When is CPU affinity a better choice than nice, and why would it
-    be a bad idea to pin everything to a single core?
-A3. In Part 4, how did RSS and VSZ from Step 28 compare with the 400
-    MB you allocated? How did MemAvailable change while the process
-    ran and after it ended?
-A4. Why did the limited run in Step 31 fail with a MemoryError while
-    the run in Step 32 worked? Why is a failing program sometimes
-    better than a program that is allowed to eat all the memory of a
-    shared server?
-A5. Using your table from Step 42, why were the 2000 small files
-    slower (or less efficient) to copy than the one big file of the
-    same total size? Why does bundling them with tar help, and what
-    does "df -i" tell an administrator?
-A6. SCENARIO. The file server shows:
-       load average 2.4 on a 4-core machine, CPU idle 40%, I/O wait
-       55%, disk %util 98%, await 180 ms, available memory 5 GB out
-       of 8 GB. iostat shows about 4000 write requests per second,
-       each only about 4 KB.
-    a. What is the bottleneck? Justify with the USE method.
-    b. Would adding CPU cores or RAM solve it? Why or why not?
-    c. Suggest two practical tuning steps.
-A7. SCENARIO. Every night a file-indexing script on the server stops
-    with a MemoryError, although "free -m" shows 6 GB of memory
-    available. The script runs with a memory limit of 1 GB.
-    a. Why does the script fail even though plenty of RAM is free?
-    b. Which command from today would you use to check the limit?
-    c. Give two ways to solve the problem and one risk of simply
-       removing the limit completely.
-A8. A Nagios plugin reports its result through an exit code. Explain
-    how you could turn your mini_monitor_d.sh disk check into a
-    Nagios-style check (which exit codes would you return for OK,
-    WARNING and CRITICAL?). Then compare Nagios and Zabbix in 3-4
-    lines: how does each collect data, and which would you prefer for
-    a college with 3 servers that wants simple alerts, and why?
+Step 7. Check Docker is working:
+   docker --version
+   docker compose version
+(If "docker compose" does not work, try "docker-compose" instead
+everywhere below.)
+Screenshot [S2].
+
+Step 8. Elasticsearch needs a system setting on Linux/WSL. Run:
+   sudo sysctl -w vm.max_map_count=262144
+
+Step 9. Start the stack (first time it downloads images, which can
+take several minutes; wait patiently):
+   docker compose up -d
+
+Step 10. Check the containers are running:
+   docker ps
+Screenshot [S3]: all three containers (elasticsearch, logstash,
+kibana) with status "Up".
+
+Step 11. Wait about 1-2 minutes, then test Elasticsearch:
+   curl http://localhost:9200
+You should see JSON with a "cluster_name" and "version".
+Screenshot [S4].
+
+Step 12. Open Kibana in your browser: http://localhost:5601
+(It may take 1-2 more minutes to become ready.)
+Screenshot [S5]: the Kibana home page.
+
+════════════════════════════════
+PART 3: CHECK THAT LOGS WERE INGESTED
+════════════════════════════════
+Step 13. See what Logstash did:
+   docker logs logstash
+Look for structured output containing fields like "clientip", "verb",
+"request", "response". Screenshot [S6].
+
+Step 14. List all indices in Elasticsearch:
+   curl "http://localhost:9200/_cat/indices?v&quot;
+You should see an index named portal-logs-2026.10.12 with docs.count 22.
+Screenshot [S7].
+
+Step 15. Fetch 2 documents:
+   curl "http://localhost:9200/portal-logs-*/_search?pretty&size=2&quot;
+Screenshot [S8]. In your document, list the fields Grok created from
+the raw log line (for example clientip, verb, request, response,
+bytes, timestamp).
+
+Troubleshooting (read before asking for help):
+- Index not found? Wait 1 minute and run Step 14 again.
+- Container exited? Run "docker logs elasticsearch" to see why. The
+  most common cause is Step 8 not being done.
+- Port already in use? Another student project may be running; run
+  "docker ps" and stop old containers.
+- If you edit the log file or pipeline later, delete the old data
+  first to avoid duplicates, using your exact index name:
+   curl -X DELETE "http://localhost:9200/portal-logs-2026.10.12&quot;
+  then run: docker compose restart logstash
+
+════════════════════════════════
+PART 4: SEARCH IN KIBANA (INVESTIGATION)
+════════════════════════════════
+Step 16. Create a Data View: open the menu (☰) → Stack Management →
+Data Views → Create data view. Name: portal. Index pattern:
+portal-logs-*. Timestamp field: @timestamp. Click Save.
+
+Step 17. Open the menu → Discover. Select the "portal" data view.
+Your logs are dated 12 Oct 2026, so set the time range (top right)
+to an absolute range covering 12 Oct 2026 (or "Last 7 days" if
+today is within a week of that date). You should see 22 events.
+Screenshot [S9].
+
+Step 18. Using the search bar (it uses KQL, Kibana Query Language),
+run each query below, screenshot it, and write the number of hits:
+   a. response : 401             → [S10]  (failed logins)
+   b. response : 500             → [S11]  (server errors)
+   c. request : "/fees"          → [S12]  (the fees page)
+   d. clientip : "10.0.0.25"     → [S13]  (one suspicious IP)
+   e. response >= 400            → [S14]  (all errors)
+
+Step 19. Add the fields "clientip", "verb", "request" and "response"
+as columns in Discover (hover over a field name on the left and click
+"add"). Screenshot [S15].
+
+════════════════════════════════
+PART 5: VISUALIZE AND BUILD A DASHBOARD
+════════════════════════════════
+Step 20. Menu → Dashboard → Create dashboard → Create visualization.
+This opens the Lens editor. Choose the "portal" data view.
+
+Step 21. Build four charts (one at a time, using "Save and return"
+after each):
+   Chart 1: Requests per HTTP status code
+      Chart type: Pie or Donut. Slice by: "response". Metric: Count.
+   Chart 2: Top requested pages
+      Chart type: Horizontal bar. Break down by: "request.keyword"
+      (Top values, 10). Metric: Count.
+   Chart 3: Requests per client IP
+      Chart type: Bar. Horizontal axis: "clientip.keyword" (Top
+      values, 10). Metric: Count.
+   Chart 4: Requests over time
+      Chart type: Line or bar. Horizontal axis: "@timestamp".
+      Metric: Count.
+(If a ".keyword" field is not shown, use the field without ".keyword".)
+
+Step 22. Arrange the four charts on the dashboard, click Save, and
+title it: "College Portal Log Analysis - <YourRollNo>".
+Screenshot [S16]: the final dashboard (set the time range so data
+is visible).
+
+Step 23. Personal challenge (to prove this is your own work): append
+3 new log lines to portal_access.log using your own IP
+(10.0.1.<last 2 digits of your roll number>) with one 401 login
+failure and one 404 request to a page named after yourself (for
+example /your-name). Make sure the file still ends with a newline.
+Delete the old index (see troubleshooting), restart Logstash, and
+find your new entries in Discover. Screenshot [S17].
+
+════════════════════════════════
+PART 6: ANALYSIS (answer in your document)
+════════════════════════════════
+A1. Looking at the original 22-line dataset, what percentage of
+    requests were errors (4xx or 5xx)? Show your calculation.
+A2. Students complained that the fees page "sometimes shows an
+    error". Using your search results, which status code is it
+    returning, how many times, and which page apart from /fees also
+    returned a 500? What might this suggest to a developer?
+A3. Which IP address made repeated failed login attempts (401)? How
+    many attempts, and within what time window? What kind of attack
+    could this indicate, and what action could the administrator take?
+A4. Imagine Nagios shows the "fees" service as CRITICAL. Explain step
+    by step how you would use Kibana to find the cause.
+A5. Which pages returned 404? What could be the reason, and how can
+    logs help a developer fix such problems?
 
 ════════════════════════════════
 REFLECTION AND CONCEPT QUESTIONS (answer in your own words)
 ════════════════════════════════
-Q1. What is a bottleneck? Explain using your own example (not the
-    single-lane bridge).
-Q2. What is a baseline and why do we record it before problems
-    happen?
-Q3. What do the three numbers of load average mean?
-Q4. What is the difference between RSS and VSZ?
-Q5. What is an inode and why can a disk be "full" even when it has
-    free space?
-Q6. Explain the USE method with one example resource.
-Q7. In the previous labs you used Nagios and ELK. How do monitoring,
-    logging and performance analysis work together when someone says
-    "the server is slow"?
-
+Q1. What is a log, and why do servers generate them? Give two examples
+    of information inside a log line.
+Q2. What is the "needle in a haystack" problem and how does
+    centralized logging solve it?
+Q3. Explain the role of Elasticsearch, Logstash and Kibana using the
+    restaurant analogy or your own analogy.
+Q4. What is an Index in Elasticsearch? What is a document?
+Q5. Why does Logstash need to split a raw log line into fields using
+    Grok before we can search or chart the data?
+Q6. How are monitoring (Nagios/Zabbix) and logging (ELK) different,
+    and why do companies use both?
+Q7. What was the most difficult step for you today, and how did you
+    solve it?
 
 ════════════════════════════════
-CLEAN-UP (before leaving)
+CLEAN-UP (after submitting screenshots)
 ════════════════════════════════
-   pkill yes
-   pkill stress-ng
-   rm -rf ~/perf-lab-d/disk-test
-(Make sure no load processes are still running: check with "top" or
-"htop".)
+   docker compose down
+This stops and removes the containers and frees memory on the lab PC.
 
 ════════════════════════════════
 SUBMISSION INSTRUCTIONS
 ════════════════════════════════
 1. Create a single Word or PDF document.
 2. Add your Name and Roll Number at the top.
-3. Paste screenshots S1 to S38 in order, each with a one-line caption
+3. Paste screenshots S1 to S17 in order, each with a one-line caption
    saying what it shows.
-4. Include your baseline table (Step 11), the load average table
-   (Step 16), the T1-T3 table (Step 25), your answer for Step 33,
-   the disk table (Step 42), your answer for Step 49, Part 7 (A1-A8)
-   and Q1-Q7.
-5. Save the file as: RollNo_Name_Lab.pdf
+4. Include your written answers for Step 6, Step 15 (fields list),
+   Step 18 (hit counts), Part 6 (A1-A5) and Q1-Q7.
+5. Save the file as: RollNo_Name_Lab8.pdf
 6. Attach and submit it on Classroom by the end of today's lab session.
