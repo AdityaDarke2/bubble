@@ -1,0 +1,505 @@
+Objective: Learn how to find out WHY a system is slow and how to fix it. You will record a healthy baseline, watch how load average
+behaves, move a greedy process to another CPU core, limit the memory of a process, compare how a disk handles one big file versus many small files, and build a small monitoring script with alerts.
+
+How to use this assignment: Read PART 0 first (it teaches the concepts), then follow Parts 1-7 in order. Every command is given.
+
+To be completed and submitted within today's lab session. Suggested time: Part 0 (10 min), Parts 1-2 (15 min), Part 3 (20 min),
+Part 4 (12 min), Part 5 (15 min), Part 6 (10 min), write-up (8 min).
+
+SAFETY RULES (lab PCs are shared):
+- Create only the load that is written in the steps. Never increase
+  the numbers.
+- Always stop your load processes and delete your test files when
+  the step says so.
+- Do all work inside your own folder in your Linux home directory
+  (not in /mnt/c on WSL).
+- Do not run any of these commands on someone else's machine.
+
+════════════════════════════════
+PART 0: READ FIRST — CONCEPTS
+════════════════════════════════
+
+0.1 Scenario
+You are a junior system administrator at a college. The shared FILE SERVER (where students and teachers store files) becomes slow in the evening when many people upload and back up data. Your job is not to guess. Your job is to measure, find the bottleneck, change ONE thing, and measure again.
+
+0.2 Bottleneck
+A bottleneck is the slowest resource that limits the performance of the whole system (like a single-lane bridge on a wide highway: no matter how many lanes the highway has, traffic moves at the speed of the bridge). The four main resources are CPU, memory, disk and
+network. Buying more RAM will not help if the real problem is a slow disk. Always find the bottleneck first.
+
+0.3 Baseline
+A baseline is a set of readings recorded when the system is healthy. You know a person has a fever only because you know the normal body temperature. In the same way, you can say a server is "slow" only by comparing against its baseline.
+
+0.4 The tuning cycle
+   1. MEASURE the system
+   2. IDENTIFY the bottleneck
+   3. CHANGE only one thing
+   4. MEASURE again and compare
+If you change many things together, you will never know which one
+helped.
+
+0.5 CPU: load average and CPU affinity
+Imagine a kitchen with 4 chefs (4 CPU cores). Orders are the running tasks. If 4 orders come, every chef is busy and nobody waits. If 8
+come, 4 wait in a queue. "Load average" (shown by uptime) is the average number of tasks running or waiting for CPU. uptime shows THREE numbers: the average over the last 1 minute, 5 minutes and 15 minutes. When a heavy load starts, the 1-minute number rises quickly, the 5-minute number rises slowly, and the 15-minute number hardly moves. Comparing the three tells you whether the load is a short spike or a long-running problem. Because these are averages, they never jump instantly to the final value; after one minute of a steady load the 1-minute value has reached only about 60% of it.
+"pidstat -u" shows how much CPU each PROCESS is using, so you can find
+the culprit.
+CPU affinity means "pinning" a process to chosen CPU cores. If a
+greedy process is pinned to core 0, it cannot disturb a job running
+on core 1. The trade-off: a pinned process cannot use the other cores
+even when they are idle, so affinity must be used carefully.
+
+0.6 Memory: RSS, VSZ and limits
+RAM is your working desk; the disk is a storage room far away.
+For one process, two numbers matter:
+   RSS = the physical RAM the process is really using right now
+   VSZ = the total virtual memory the process has reserved (can be
+         much bigger than what it really uses)
+Linux can also set a LIMIT on how much virtual memory a process may
+use ("ulimit -v", in kilobytes). If the process asks for more, the
+request fails and the program gets a "MemoryError" instead of
+swallowing the whole server's RAM. Limits protect a shared server
+from one buggy program.
+Reminder: check "available" memory (MemAvailable), not just "free",
+because Linux uses spare RAM as cache.
+
+0.7 Disk: big files, small files and inodes
+Copying 100 MB as ONE file is usually much faster than copying 100 MB
+made of thousands of tiny files, because every file needs extra work:
+a new directory entry and a new inode (an inode is a small record
+that stores a file's information). A filesystem can even run out of
+inodes while still having free space; "df -i" shows inode usage. One
+common trick is to bundle many small files into a single archive
+(tar) before copying or backing them up.
+Two numbers to watch in iostat: await (how long a request waits for
+the disk, in milliseconds) and %util (how busy the disk is).
+
+0.8 The USE Method
+For every resource ask three questions:
+   Utilization - how much of it is being used?
+   Saturation  - is work waiting in a queue?
+   Errors      - are there any errors?
+If CPU, memory and disk all look healthy, suspect the network or the
+application itself.
+
+0.9 Monitoring tools: Nagios and Zabbix (reading task)
+In Lab 7 you used Nagios. A Nagios check is a small program (a
+"plugin"). Nagios reads the plugin's exit code: 0 = OK, 1 = WARNING,
+2 = CRITICAL, 3 = UNKNOWN, plus one line of text. Zabbix is another
+popular open-source monitoring tool. It normally installs a small
+"agent" on each server that collects data and sends it to the Zabbix
+server, which stores long-term history with built-in graphs. Both
+raise alerts when a threshold is crossed. You will answer a question
+about this in Part 7.
+
+════════════════════════════════
+PART 1: SETUP
+════════════════════════════════
+Step 1. Open a terminal. Create a working folder in your home
+directory:
+   cd ~
+   mkdir perf-lab-d
+   cd perf-lab-d
+
+Step 2. Install the tools:
+   sudo apt update
+   sudo apt install -y sysstat stress-ng htop
+Screenshot [S1]: the installation finishing without errors.
+
+Step 3. Check the tools are available:
+   stress-ng --version
+   pidstat -V
+   taskset --version
+   python3 --version
+Screenshot [S2].
+
+════════════════════════════════
+PART 2: RECORD YOUR BASELINE (HEALTHY SYSTEM)
+════════════════════════════════
+Close heavy applications first (videos, many browser tabs). Then run
+each command and screenshot.
+
+Step 4. CPU cores and model:
+   nproc
+   lscpu | grep -E "^CPU\(s\):|Model name"
+Screenshot [S3]. Write the number: CORES = __.
+
+Step 5. Load average:
+   uptime
+Screenshot [S4]. Write ALL THREE load average numbers (1, 5, 15 min).
+
+Step 6. Memory in megabytes:
+   free -m
+Screenshot [S5]. Write total, available and swap used.
+
+Step 7. Detailed memory figures (values are in kB):
+   grep -E "MemTotal|MemAvailable|^Cached|SwapTotal|SwapFree" /proc/meminfo
+Screenshot [S6]. Note MemAvailable (you will compare it later).
+
+Step 8. Overall activity, one reading per second for 5 seconds:
+   vmstat 1 5
+Screenshot [S7]. Note: r, b, si, so, us, sy, id, wa.
+
+Step 9. Disk activity, 3 readings:
+   iostat -x 1 3
+Screenshot [S8]. Note %util and the await column (it may be named
+await, r_await or w_await depending on version).
+(If iostat shows no disk data on your system, write that in your
+document and continue; this can happen on WSL.)
+
+Step 10. Disk space and inode usage of your current folder:
+   df -h .
+   df -i .
+Screenshot [S9].
+
+Step 11. Create a BASELINE TABLE in your document with these rows:
+cores, CPU model, 1/5/15-min load, MemAvailable (MB), swap used, CPU
+idle %, I/O wait %, disk %util, disk used %, inode used %.
+
+════════════════════════════════
+PART 3: EXPERIMENT 1 — CPU: LOAD AVERAGE AND CPU AFFINITY
+════════════════════════════════
+PART 3A — Watch the load average rise and fall
+Use ONE terminal for this part.
+
+Step 12. Record the load before starting:
+   uptime
+Screenshot [S10].
+
+Step 13. Start a CPU load on ALL cores for 90 seconds, in the
+background:
+   stress-ng --cpu $(nproc) --timeout 90s &
+
+Step 14. Immediately run this single line. It waits 5 seconds, shows
+per-process CPU usage for 6 seconds, shows the load, waits 40 seconds
+and shows the load again:
+   sleep 5; pidstat -u 2 3; uptime; sleep 40; uptime
+Screenshot [S11]: the whole output. In pidstat, look at the %CPU
+column: the "stress-ng-cpu" workers should be near the top, each near
+100%.
+
+Step 15. Wait until stress-ng finishes, then record the load again:
+   wait
+   uptime
+Screenshot [S12].
+
+Step 16. In your document make a table with FOUR rows: before load,
+about 10 seconds after start, about 50 seconds after start, after
+the load ended. For each row write the 1-min, 5-min and 15-min load
+values. Write which of the three numbers changed the most and which
+changed the least.
+
+PART 3B — Move a greedy process to another core (CPU affinity)
+Step 17. This part needs at least 2 CPU cores. Check your CORES value
+from Step 4. If you have only 1 core, write "single core system" in
+your document and skip Steps 18-25.
+
+Step 18. Run a small calculation pinned to core 1 and note the
+"real" time (call it T1):
+   time taskset -c 1 python3 -c "print(sum(i%7 for i in range(15000000)))"
+Screenshot [S13].
+(If it finishes in less than 1.5 seconds on your machine, use
+45000000 instead of 15000000 in ALL three runs of this command.)
+
+Step 19. Start a greedy process on the SAME core 1 and note its PID:
+   taskset -c 1 yes > /dev/null &
+   jobs -l
+
+Step 20. Check which core it is running on (the PSR column is the
+core number):
+   ps -o pid,psr,cmd -p <PID>
+Screenshot [S14]: Steps 19 and 20 together; PSR should be 1.
+
+Step 21. Run the calculation again while the greedy process shares
+core 1 and note the time (T2):
+   time taskset -c 1 python3 -c "print(sum(i%7 for i in range(15000000)))"
+Screenshot [S15].
+
+TUNING — Move the greedy process to core 0
+Step 22. Change the CPU affinity of the RUNNING greedy process, then
+check where it runs now:
+   taskset -cp 0 <PID>
+   ps -o pid,psr,cmd -p <PID>
+Screenshot [S16]: the affinity message and PSR now showing 0.
+
+Step 23. Run the calculation a third time (still pinned to core 1)
+and note the time (T3):
+   time taskset -c 1 python3 -c "print(sum(i%7 for i in range(15000000)))"
+Screenshot [S17].
+(On some machines two logical cores share one physical core, so T3
+may be slightly higher than T1. That is normal.)
+
+Step 24. Stop the greedy process and confirm it is gone:
+   kill <PID>; sleep 1; jobs -l; pgrep -ax yes || echo "no yes process running"
+Screenshot [S18].
+
+Step 25. Make a table in your document: T1 (calculation alone), T2
+(greedy process on the same core), T3 (greedy process moved to core
+0). Write what you learned about CPU affinity.
+
+════════════════════════════════
+PART 4: EXPERIMENT 2 — MEMORY: RSS, VSZ AND PROCESS LIMITS
+════════════════════════════════
+You need two terminals. Terminal 1 runs commands. Terminal 2 monitors.
+
+Step 26. Terminal 1: check memory and the current memory limit of
+your shell:
+   free -m
+   ulimit -v
+Screenshot [S19]. (ulimit -v prints "unlimited" if no limit is set.)
+
+Step 27. Terminal 2: watch the memory figures every second
+   watch -n 1 "grep -E 'MemAvailable|SwapFree' /proc/meminfo"
+(Leave it running.)
+
+Step 28. Terminal 1: start a process that holds 400 MB of memory for
+40 seconds, and look at its RSS and VSZ (in kB):
+   python3 -c "import time; a = b'x' * (400*1024*1024); print('allocated 400 MB'); time.sleep(40)" &
+   sleep 3; ps -o pid,rss,vsz,cmd -C python3
+Screenshot [S20]. (If your system has less than 4 GB RAM, use
+200*1024*1024 instead of 400*1024*1024 here and in the next steps,
+and write "200 MB" instead of "400 MB".)
+
+Step 29. Screenshot [S21]: Terminal 2 while the process is running.
+Compare MemAvailable with the value from Step 7. It should be lower
+by roughly the size of the memory your process holds.
+
+Step 30. Wait about 40 seconds until the process finishes. Screenshot
+[S22]: Terminal 2 showing MemAvailable back near its original value.
+Then press Ctrl+C in Terminal 2.
+
+TUNING — Limit the memory of a process
+Step 31. In Terminal 1, run the same allocation, but inside a
+subshell that has a memory limit of about 293 MB (300000 kB). The
+brackets matter: they keep the limit away from your main terminal.
+   ( ulimit -v 300000; python3 -c "a = b'x' * (400*1024*1024); print('allocated')" ); echo "exit code: $?"
+   ulimit -v
+Screenshot [S23]: you should see a MemoryError, a non-zero exit code,
+and "unlimited" on the last line (your main terminal was not
+affected). (Low-RAM variant: allocate 200 MB and use -v 150000.)
+
+Step 32. Now run it again with a higher limit (about 586 MB):
+   ( ulimit -v 600000; python3 -c "a = b'x' * (400*1024*1024); print('allocated')" ); echo "exit code: $?"
+Screenshot [S24]: it should print "allocated" and exit code 0.
+(Low-RAM variant: allocate 200 MB and use -v 300000.)
+(If Python cannot even start under a limit on your system, raise both
+limit numbers by 100000 and try again, and note this in your
+document.)
+
+Step 33. In your document answer: how does a memory limit protect a
+shared file server, and what is one risk of setting the limit too low?
+
+════════════════════════════════
+PART 5: EXPERIMENT 3 — DISK: ONE BIG FILE VS MANY SMALL FILES
+════════════════════════════════
+This part needs about 500 MB of free disk space. Check with Step 34.
+
+Step 34. Create a test folder and check space and inodes:
+   cd ~/perf-lab-d
+   mkdir disk-test
+   cd disk-test
+   df -h .
+   df -i .
+Screenshot [S25]. Note "Avail" and the IUse% value.
+
+Step 35. Terminal 2: watch disk activity (leave it running during
+this whole part)
+   vmstat 1
+(Watch the "bo" column: blocks written to disk per second.)
+
+Step 36. Terminal 1: create ONE big file of 64 MB:
+   dd if=/dev/zero of=big.bin bs=1M count=64 conv=fdatasync
+Screenshot [S26]: the dd result with its speed.
+
+Step 37. Create 2000 small files of 32 KB each (about the same total
+size). This is only the setup and is not timed:
+   mkdir small
+   for i in $(seq 1 2000); do head -c 32768 /dev/zero > small/f$i; done; sync
+   ls small | wc -l
+   du -sh small big.bin
+   df -i .
+Screenshot [S27]: the file count (2000), the sizes, and the inode
+usage. Compare "Used" inodes with Step 34.
+
+Step 38. TEST A: copy the ONE big file and time it (sync makes sure
+the data really reaches the disk):
+   time (cp big.bin big_copy.bin; sync)
+Screenshot [S28]. Note the "real" time.
+
+Step 39. TEST B: copy the folder of 2000 small files and time it:
+   time (cp -r small small_copy; sync)
+Screenshot [S29]. Note the "real" time.
+
+Step 40. TEST C (tuning): bundle the small files into one archive,
+time the archiving, then time copying the single archive:
+   time (tar -cf small.tar small; sync)
+Screenshot [S30].
+   time (cp small.tar small_tar_copy.tar; sync)
+Screenshot [S31].
+
+Step 41. Screenshot [S32]: Terminal 2 (vmstat) showing the "bo"
+spikes during your tests. Then press Ctrl+C in Terminal 2.
+
+Step 42. Make a table in your document: Test A (copy one 64 MB file),
+Test B (copy 2000 small files), Test C1 (create tar), Test C2 (copy
+the tar). Write which was fastest and slowest and explain using
+Part 0.7. (On a very fast SSD all times may be small and close to
+each other; write exactly what you observe.)
+
+Step 43. CLEAN UP (important):
+   cd ~/perf-lab-d
+   rm -rf disk-test
+   ls
+Screenshot [S33] showing the disk-test folder is gone.
+
+════════════════════════════════
+PART 6: BUILD YOUR OWN MINI MONITOR (SCRIPT WITH ALERTS)
+════════════════════════════════
+Nagios checks resources and raises alerts. You will build a tiny
+version of that, with a DISK alert and a PROCESS alert that names
+the culprit.
+
+Step 44. Create the script in your perf-lab-d folder:
+   cd ~/perf-lab-d
+   nano mini_monitor_d.sh
+Paste exactly this:
+
+#!/bin/bash
+# Mini monitor D: logs load, disk usage and the top CPU process
+DISK_MAX=90
+PROC_CPU_MAX=80
+echo "time,load1,disk_used_pct,top_process,top_cpu_pct" > perf_log_d.csv
+for i in $(seq 1 10); do
+  t=$(date +%H:%M:%S)
+  l=$(cut -d' ' -f1 /proc/loadavg)
+  d=$(df -P . | awk 'NR==2 {gsub("%","",$5); print $5}')
+  read pcpu pname < <(ps -eo %cpu,comm --sort=-%cpu | awk 'NR>1 && $2!="ps" && $2!="awk" {print $1, $2; exit}')
+  pcpu_int=${pcpu%.*}
+  echo "$t,$l,$d,$pname,$pcpu" >> perf_log_d.csv
+  if [ "$d" -ge "$DISK_MAX" ]; then
+    echo "DISK ALERT at $t: disk is $d% full"
+  fi
+  if [ "$pcpu_int" -ge "$PROC_CPU_MAX" ]; then
+    echo "PROCESS ALERT at $t: $pname is using $pcpu% CPU"
+  fi
+  sleep 5
+done
+echo "Done. Data saved in perf_log_d.csv"
+
+Step 45. Make it executable and run it once with no extra load
+(takes about 50 seconds):
+   chmod +x mini_monitor_d.sh
+   ./mini_monitor_d.sh
+Screenshot [S34]: the script running to completion.
+
+Step 46. Test the PROCESS alert. Start a greedy process, run the
+monitor, then stop the greedy process:
+   yes > /dev/null &
+   ./mini_monitor_d.sh
+   pkill yes
+Screenshot [S35]: the output showing PROCESS ALERT lines that name
+"yes" as the culprit.
+
+Step 47. Test the DISK alert. Your disk is probably less than 90%
+full, so we temporarily set the limit to 0 to force the alert. Use
+these commands:
+   sed -i 's/^DISK_MAX=90$/DISK_MAX=0/' mini_monitor_d.sh
+   grep "^DISK_MAX=" mini_monitor_d.sh
+   ./mini_monitor_d.sh
+Screenshot [S36]: DISK ALERT lines. Then restore the original value
+and verify it:
+   sed -i 's/^DISK_MAX=0$/DISK_MAX=90/' mini_monitor_d.sh
+   grep "^DISK_MAX=" mini_monitor_d.sh
+Screenshot [S37]: showing DISK_MAX=90 again.
+
+Step 48. Display the saved data:
+   cat perf_log_d.csv
+Screenshot [S38].
+
+Step 49. In your document explain in 4-5 lines: which part of the
+script is the "INPUT" (data collection), which are the "threshold
+checks", and which are the "alerts". How is this similar to the Host,
+Service, Threshold and Alert concepts of Nagios from Lab 7? Why did
+we set DISK_MAX to 0 in Step 47?
+
+════════════════════════════════
+PART 7: ANALYSIS (answer in your document)
+════════════════════════════════
+A1. Using your table from Step 16: which of the three load average
+    numbers rose the fastest and which the slowest? Why do they
+    behave differently? If you saw a server with a high 1-minute
+    load but a low 15-minute load, what would that tell you?
+A2. Using your table from Step 25: how much slower was T2 than T1?
+    How close did T3 get to T1 after you moved the greedy process?
+    When is CPU affinity a better choice than nice, and why would it
+    be a bad idea to pin everything to a single core?
+A3. In Part 4, how did RSS and VSZ from Step 28 compare with the 400
+    MB you allocated? How did MemAvailable change while the process
+    ran and after it ended?
+A4. Why did the limited run in Step 31 fail with a MemoryError while
+    the run in Step 32 worked? Why is a failing program sometimes
+    better than a program that is allowed to eat all the memory of a
+    shared server?
+A5. Using your table from Step 42, why were the 2000 small files
+    slower (or less efficient) to copy than the one big file of the
+    same total size? Why does bundling them with tar help, and what
+    does "df -i" tell an administrator?
+A6. SCENARIO. The file server shows:
+       load average 2.4 on a 4-core machine, CPU idle 40%, I/O wait
+       55%, disk %util 98%, await 180 ms, available memory 5 GB out
+       of 8 GB. iostat shows about 4000 write requests per second,
+       each only about 4 KB.
+    a. What is the bottleneck? Justify with the USE method.
+    b. Would adding CPU cores or RAM solve it? Why or why not?
+    c. Suggest two practical tuning steps.
+A7. SCENARIO. Every night a file-indexing script on the server stops
+    with a MemoryError, although "free -m" shows 6 GB of memory
+    available. The script runs with a memory limit of 1 GB.
+    a. Why does the script fail even though plenty of RAM is free?
+    b. Which command from today would you use to check the limit?
+    c. Give two ways to solve the problem and one risk of simply
+       removing the limit completely.
+A8. A Nagios plugin reports its result through an exit code. Explain
+    how you could turn your mini_monitor_d.sh disk check into a
+    Nagios-style check (which exit codes would you return for OK,
+    WARNING and CRITICAL?). Then compare Nagios and Zabbix in 3-4
+    lines: how does each collect data, and which would you prefer for
+    a college with 3 servers that wants simple alerts, and why?
+
+════════════════════════════════
+REFLECTION AND CONCEPT QUESTIONS (answer in your own words)
+════════════════════════════════
+Q1. What is a bottleneck? Explain using your own example (not the
+    single-lane bridge).
+Q2. What is a baseline and why do we record it before problems
+    happen?
+Q3. What do the three numbers of load average mean?
+Q4. What is the difference between RSS and VSZ?
+Q5. What is an inode and why can a disk be "full" even when it has
+    free space?
+Q6. Explain the USE method with one example resource.
+Q7. In the previous labs you used Nagios and ELK. How do monitoring,
+    logging and performance analysis work together when someone says
+    "the server is slow"?
+
+
+════════════════════════════════
+CLEAN-UP (before leaving)
+════════════════════════════════
+   pkill yes
+   pkill stress-ng
+   rm -rf ~/perf-lab-d/disk-test
+(Make sure no load processes are still running: check with "top" or
+"htop".)
+
+════════════════════════════════
+SUBMISSION INSTRUCTIONS
+════════════════════════════════
+1. Create a single Word or PDF document.
+2. Add your Name and Roll Number at the top.
+3. Paste screenshots S1 to S38 in order, each with a one-line caption
+   saying what it shows.
+4. Include your baseline table (Step 11), the load average table
+   (Step 16), the T1-T3 table (Step 25), your answer for Step 33,
+   the disk table (Step 42), your answer for Step 49, Part 7 (A1-A8)
+   and Q1-Q7.
+5. Save the file as: RollNo_Name_Lab.pdf
+6. Attach and submit it on Classroom by the end of today's lab session.
